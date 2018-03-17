@@ -21,6 +21,7 @@ from queue import Queue
 from heapq import heappush, heappop
 from numba import jit
 from bisect import bisect_left
+from .dists import NormalInverseWishart
 
 import math
 
@@ -105,7 +106,7 @@ def _fast_max_to_box(mns, mxs, x):
 
 class PNode:
     """PERCH node."""
-    def __init__(self, exact_dist_thres=10):
+    def __init__(self, nu_0, mu_0, kappa_0, lambda_0, exact_dist_thres=10):
         self.id = "id" + ''.join(random.choice(
           string.ascii_uppercase + string.digits) for _ in range(12))
         self.children = []
@@ -122,6 +123,13 @@ class PNode:
         self.deleted = False
         # With fewer than this many pts compute the min/max distances exactly.
         self.exact_dist_threshold = exact_dist_thres
+        self.X = []
+        self.nu_0 = nu_0
+        self.mu_0 = mu_0
+        self.kappa_0 = kappa_0
+        self.lambda_0 = lambda_0
+        self.niw = NormalInverseWishart(nu_0=self.nu_0, mu_0=self.mu_0, kappa_0=self.kappa_0, lambda_0=self.lambda_0)
+        self.logp = None
 
     def __lt__(self, other):
         """An arbitrary way to determine an order when comparing 2 nodes."""
@@ -254,6 +262,11 @@ class PNode:
                         if c.pts:
                             for cc in c.pts:
                                 self.pts.append(cc)
+
+            if len(self.X) == 0:
+                self.X.extend(self.children[0].X)
+                self.X.extend(self.children[1].X)
+            self.logp = self.niw.log_marginal_likelihood(np.array(self.X))
 
             # Update the cached distances at the parent.
             if self.parent:
@@ -450,6 +463,7 @@ class PNode:
         A point to this node (i.e., self). Self now "contains" pt.
         """
         self.point_counter += 1.0
+        self.X.append(pt[0])
         if self.pts is not None and \
                         self.point_counter > self.exact_dist_threshold:
             self.pts = None
@@ -473,7 +487,7 @@ class PNode:
         Returns:
         A pointer to the new node containing pt.
         """
-        new_internal = PNode(exact_dist_thres=self.exact_dist_threshold)
+        new_internal = PNode(exact_dist_thres=self.exact_dist_threshold, nu_0=self.nu_0, mu_0=self.mu_0, kappa_0=self.kappa_0, lambda_0=self.lambda_0)
         # If we are splitting down from a collapsed node, then the pts array
         # is already set to None and we shouldn't instantiate one.
         if self.pts is not None:
@@ -489,7 +503,7 @@ class PNode:
         else:
             new_internal.add_child(self)
 
-        new_leaf = PNode(exact_dist_thres=self.exact_dist_threshold)
+        new_leaf = PNode(exact_dist_thres=self.exact_dist_threshold, nu_0=self.nu_0, mu_0=self.mu_0, kappa_0=self.kappa_0, lambda_0=self.lambda_0)
         new_leaf.add_pt(pt)  # This updates the points counter.
         new_internal.add_child(new_leaf)
         new_internal.add_pt(pt) # This updates the points counter.
@@ -513,7 +527,7 @@ class PNode:
         self.parent.deleted = True
 
         # Make the aunt and self have the same parent
-        new_parent = PNode(exact_dist_thres=self.exact_dist_threshold)
+        new_parent = PNode(exact_dist_thres=self.exact_dist_threshold, nu_0=self.nu_0, mu_0=self.mu_0, kappa_0=self.kappa_0, lambda_0=self.lambda_0)
         new_parent.pts = None
         new_parent.add_child(aunt)
         new_parent.add_child(self)
@@ -545,11 +559,11 @@ class PNode:
         None.
         """
         curr_node = self
-        masked = True  # Init value.
         r = curr_node.root()
-        while curr_node != r and masked:
+        while curr_node != r:
             if curr_node.parent and curr_node.parent.parent and \
-                    curr_node.is_closer_to_aunt():
+                    curr_node.is_more_likely_with_aunt():
+                    # curr_node.is_closer_to_aunt():
                 curr_node._rotate()
                 # Collapsed mode.
                 if collapsibles is not None and curr_node.is_leaf() and \
@@ -558,7 +572,6 @@ class PNode:
                                             curr_node.parent))
                 curr_node = curr_node.parent
             elif curr_node.children:
-                masked = False  # This enables early stopping.
                 curr_node = curr_node.parent
             else:
                 curr_node = curr_node.parent
@@ -813,6 +826,29 @@ class PNode:
 
             sibling_min_dist = self.parent.children_min_d
             return smallest_max_dist < sibling_min_dist
+        else:
+            return False
+
+    def is_more_likely_with_aunt(self):
+        """Determine if self is "closer" to its aunt than its sibling.
+
+        Check to see if every point in node is closer to every
+        point in its aunt's bounding box than in its siblings bounding box.
+
+        Args:
+        None.
+
+        Returns:
+        True if self is "closer" to its aunt than its sibling. False, otherwise.
+        """
+        if self.parent and self.parent.parent:
+            aunt = self.aunts()[0]
+            this_observation = self.parent.X
+            other_observation = self.X + aunt.X
+            this_likelihood = self.niw.log_marginal_likelihood(np.array(this_observation))
+            other_likelihood = self.niw.log_marginal_likelihood(np.array(other_observation))
+
+            return other_likelihood > this_likelihood
         else:
             return False
 

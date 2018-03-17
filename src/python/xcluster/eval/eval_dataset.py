@@ -68,6 +68,7 @@ if __name__ == "__main__":
     parser.add_argument('--exact_dist_thres', '-e', type=int,
                         help='# of points to search using exact dist threshold',
                         default=10)
+    parser.add_argument('--dimensions', '-d', type=int, help='dimensionality of data')
 
     args = parser.parse_args()
 
@@ -86,13 +87,26 @@ if __name__ == "__main__":
                             args.max_leaves.lower() != "none" else False
     collapsibles = [] if L < float("Inf") else None
     exact_dist_thresh = args.exact_dist_thres
-    root = PNode(exact_dist_thres=10)
+    dims = args.dimensions
+    # calculating parameter values (currently random)
+    X = []
+    for pt in load_data(args.input):
+        X.append(pt[0])
+    X_np = np.array([np.array(dp) for dp in X])
+    mean = np.mean(X, axis=0)
+    variance = np.var(X, axis=0)
+    for idx, var in enumerate(variance):
+        variance[idx] = var + 1e-14
+    cov = np.zeros((dims, dims))
+    row, col = np.diag_indices(cov.shape[0])
+    cov[row, col] = np.random.rand(dims)
+    root = PNode(exact_dist_thres=10, nu_0=dims+2, mu_0=np.random.rand(dims), kappa_0=1, lambda_0=cov)
     for pt in load_data(args.input):
         pt_start = time.time()
         root = root.insert(pt, collapsibles=collapsibles, L=L)
         pt_end = time.time()
         clustering_time_per_point.append(pt_end - pt_start)
-        if counter % 100 == 0:
+        if counter % 1 == 0:
             sys.stdout.write("Points %d || Clustering Time: %f || Avg per point"
                              " %f\n" % (
                 counter, time.time() - clustering_time_start, sum(
