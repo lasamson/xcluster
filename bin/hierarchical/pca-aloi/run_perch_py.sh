@@ -19,7 +19,7 @@ expected_dp_point_file="None"
 
 for i in `seq 1  $num_runs`
     do
-        algorithm_name="PERCH-Likelihood"
+        algorithm_name="Test"
         shuffled_data="${dataset_file}.$i"
         exp_output_dir="$output_dir/$dataset_name/$algorithm_name/run_$i"
 

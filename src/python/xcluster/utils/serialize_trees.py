@@ -32,6 +32,10 @@ def serliaze_tree_to_file_with_point_ids(root,fn):
         while not queue.empty():
           curr_node = queue.get()
           print("logp", curr_node.logp)
+          if len(curr_node.X) != 0:
+              print("data exists")
+          else:
+              print("data does not exists")
           # mu_n, lambda_n, kappa_n, nu_n = curr_node.niw.update_parameters(np.array(curr_node.X), curr_node.mu_0, curr_node.lambda_0, curr_node.kappa_0, curr_node.nu_0, len(curr_node.mu_0))
           curr_node_id = curr_node.pts[0][2] if curr_node.is_leaf() else curr_node.id
           # fout.write("%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" % (curr_node_id,curr_node.parent.id if curr_node.parent else "None", curr_node.pts[0][1] if curr_node.is_leaf() else "None", curr_node.logp if curr_node.logp else "None", mu_n, lambda_n, kappa_n, nu_n, curr_node.X))
@@ -69,7 +73,7 @@ def serliaze_collapsed_tree_to_file_with_point_ids(root,fn):
         queue.put(root)
         while not queue.empty():
           curr_node = queue.get()
-          print("logp", curr_node.logp)
+          # print("logp", curr_node.logp)
           # mu_n, lambda_n, kappa_n, nu_n = curr_node.niw.update_parameters(np.array(curr_node.X), curr_node.mu_0, curr_node.lambda_0, curr_node.kappa_0, curr_node.nu_0, len(curr_node.mu_0))
           curr_node_id = curr_node.pts[0][2] if curr_node.is_leaf() and not curr_node.is_collapsed else curr_node.id
           # fout.write("%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" % (curr_node_id,curr_node.parent.id if curr_node.parent else "None", curr_node.pts[0][1] if curr_node.is_leaf() and not curr_node.is_collapsed else "None", curr_node.logp if curr_node.logp else "None", mu_n, lambda_n, kappa_n, nu_n, curr_node.X))

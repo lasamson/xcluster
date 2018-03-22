@@ -87,8 +87,8 @@ if __name__ == "__main__":
                             args.max_leaves.lower() != "none" else False
     collapsibles = [] if L < float("Inf") else None
     exact_dist_thresh = args.exact_dist_thres
+    # Calculating parameter values (currently random)
     dims = args.dimensions
-    # calculating parameter values (currently random)
     X = []
     for pt in load_data(args.input):
         X.append(pt[0])
@@ -100,7 +100,8 @@ if __name__ == "__main__":
     cov = np.zeros((dims, dims))
     row, col = np.diag_indices(cov.shape[0])
     cov[row, col] = np.random.rand(dims)
-    root = PNode(exact_dist_thres=10, nu_0=dims+2, mu_0=np.random.rand(dims), kappa_0=1, lambda_0=cov)
+
+    root = PNode(exact_dist_thres=10, nu_0=dims+2, mu_0=np.random.rand(dims), kappa_0=1, lambda_0=cov, prob=True)
     for pt in load_data(args.input):
         pt_start = time.time()
         root = root.insert(pt, collapsibles=collapsibles, L=L)

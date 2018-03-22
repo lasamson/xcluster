@@ -106,7 +106,7 @@ def _fast_max_to_box(mns, mxs, x):
 
 class PNode:
     """PERCH node."""
-    def __init__(self, nu_0, mu_0, kappa_0, lambda_0, exact_dist_thres=10):
+    def __init__(self, nu_0, mu_0, kappa_0, lambda_0, exact_dist_thres=10, prob=False):
         self.id = "id" + ''.join(random.choice(
           string.ascii_uppercase + string.digits) for _ in range(12))
         self.children = []
@@ -123,6 +123,7 @@ class PNode:
         self.deleted = False
         # With fewer than this many pts compute the min/max distances exactly.
         self.exact_dist_threshold = exact_dist_thres
+        self.prob = prob
         self.X = []
         self.nu_0 = nu_0
         self.mu_0 = mu_0
@@ -263,9 +264,9 @@ class PNode:
                             for cc in c.pts:
                                 self.pts.append(cc)
 
-            if len(self.X) == 0:
-                self.X.extend(self.children[0].X)
-                self.X.extend(self.children[1].X)
+            # if len(self.X) == 0:
+            #     self.X.extend(self.children[0].X)
+            #     self.X.extend(self.children[1].X)
             self.logp = self.niw.log_marginal_likelihood(np.array(self.X))
 
             # Update the cached distances at the parent.
@@ -531,6 +532,8 @@ class PNode:
         new_parent.pts = None
         new_parent.add_child(aunt)
         new_parent.add_child(self)
+        new_parent.X.extend(new_parent.children[0].X)
+        new_parent.X.extend(new_parent.children[1].X)
         new_parent.point_counter = aunt.point_counter + self.point_counter
 
         # Set the children of the grandparent to be the new_parent and
@@ -558,23 +561,40 @@ class PNode:
         Returns:
         None.
         """
-        curr_node = self
-        r = curr_node.root()
-        while curr_node != r:
-            if curr_node.parent and curr_node.parent.parent and \
-                    curr_node.is_more_likely_with_aunt():
-                    # curr_node.is_closer_to_aunt():
-                curr_node._rotate()
-                # Collapsed mode.
-                if collapsibles is not None and curr_node.is_leaf() and \
-                        curr_node.siblings()[0].is_leaf():
-                    heappush(collapsibles, (curr_node.parent.children_max_d,
-                                            curr_node.parent))
-                curr_node = curr_node.parent
-            elif curr_node.children:
-                curr_node = curr_node.parent
-            else:
-                curr_node = curr_node.parent
+        if self.prob:
+            curr_node = self
+            r = curr_node.root()
+            while curr_node != r:
+                if curr_node.parent and curr_node.parent.parent and \
+                        curr_node.is_more_likely_with_aunt():
+                    curr_node._rotate()
+                    # Collapsed mode.
+                    if collapsibles is not None and curr_node.is_leaf() and \
+                            curr_node.siblings()[0].is_leaf():
+                        heappush(collapsibles, (curr_node.parent.children_max_d,
+                                                curr_node.parent))
+                    curr_node = curr_node.parent
+                elif curr_node.children:
+                    curr_node = curr_node.parent
+                else:
+                    curr_node = curr_node.parent
+        else:
+            curr_node = self
+            r = curr_node.root()
+            while curr_node != r:
+                if curr_node.parent and curr_node.parent.parent and \
+                        curr_node.is_closer_to_aunt():
+                    curr_node._rotate()
+                    # Collapsed mode.
+                    if collapsibles is not None and curr_node.is_leaf() and \
+                            curr_node.siblings()[0].is_leaf():
+                        heappush(collapsibles, (curr_node.parent.children_max_d,
+                                                curr_node.parent))
+                    curr_node = curr_node.parent
+                elif curr_node.children:
+                    curr_node = curr_node.parent
+                else:
+                    curr_node = curr_node.parent
 
     def recursive_rotate_if_unbalanced(self, collapsibles=None):
         """Rotate recursively if balance candidate detected.
