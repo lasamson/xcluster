@@ -94,7 +94,7 @@ class NormalInverseWishart(CollapsibleDistribution):
                                           self.kappa_0, self.nu_0, self.d)
         log_z_n = self.calc_log_z(*params_n)
 
-        return log_z_n - self.log_z - LOG2PI*(n*self.d/2)
+        return log_z_n - self.log_z - LOG2PI*(n*self.d/2), params_n
 
     def log_posterior_predictive(self, X_new, X_old):
         """ log_posterior_predictive(X_new, X_old)

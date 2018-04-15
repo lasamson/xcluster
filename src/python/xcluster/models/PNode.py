@@ -21,6 +21,8 @@ from queue import Queue
 from heapq import heappush, heappop
 from numba import jit
 from bisect import bisect_left
+from scipy.misc import logsumexp
+from scipy.special import gammaln
 from .dists import NormalInverseWishart
 
 import math
@@ -106,9 +108,11 @@ def _fast_max_to_box(mns, mxs, x):
 
 class PNode:
     """PERCH node."""
-    def __init__(self, nu_0, mu_0, kappa_0, lambda_0, exact_dist_thres=10, prob=False):
+
+    def __init__(self, nu_0, mu_0, kappa_0, lambda_0, dims, concentration_alpha=10, pi_k=1, exact_dist_thres=10,
+                 prob=False):
         self.id = "id" + ''.join(random.choice(
-          string.ascii_uppercase + string.digits) for _ in range(12))
+            string.ascii_uppercase + string.digits) for _ in range(12))
         self.children = []
         self.parent = None
         self.num = -1  # The order of this node in the tree.
@@ -123,7 +127,8 @@ class PNode:
         self.deleted = False
         # With fewer than this many pts compute the min/max distances exactly.
         self.exact_dist_threshold = exact_dist_thres
-        self.prob = prob
+        self.dims = dims  # Dimension of data
+        self.prob = prob  # Flag to switch between standard and BHC PERCH
         self.X = []
         self.nu_0 = nu_0
         self.mu_0 = mu_0
@@ -131,6 +136,10 @@ class PNode:
         self.lambda_0 = lambda_0
         self.niw = NormalInverseWishart(nu_0=self.nu_0, mu_0=self.mu_0, kappa_0=self.kappa_0, lambda_0=self.lambda_0)
         self.logp = None
+        self.concentration_alpha = concentration_alpha
+        self.log_d_k = concentration_alpha
+        if pi_k is not None:
+            self.log_pi_k = math.log(pi_k)
 
     def __lt__(self, other):
         """An arbitrary way to determine an order when comparing 2 nodes."""
@@ -264,10 +273,23 @@ class PNode:
                             for cc in c.pts:
                                 self.pts.append(cc)
 
-            # if len(self.X) == 0:
-            #     self.X.extend(self.children[0].X)
-            #     self.X.extend(self.children[1].X)
-            self.logp = self.niw.log_marginal_likelihood(np.array(self.X))
+            # Update self's log probability and NIW distribution with updated parameters.
+            self.logp, updated_params = self.niw.log_marginal_likelihood(np.array(self.X))
+            self.mu_0 = updated_params[0]
+            self.lambda_0 = updated_params[1]
+            self.kappa_0 = updated_params[2]
+            self.nu_0 = updated_params[3]
+            self.niw = NormalInverseWishart(nu_0=self.nu_0, mu_0=self.mu_0, lambda_0=self.lambda_0,
+                                            kappa_0=self.kappa_0)
+            if self.children:
+                self.log_d_k = logsumexp([math.log(self.concentration_alpha) + gammaln([len(self.X)])[0],
+                                          self.children[0].log_d_k + self.children[1].log_d_k])
+                self.log_pi_k = math.log(self.concentration_alpha) + gammaln([len(self.X)])[0] - self.log_d_k
+                print("PROB", self.log_pi_k)
+                self.log_pi_k_inv = math.log(1 - math.exp(self.log_pi_k))
+                print("INVPROB", self.log_pi_k_inv)
+                self.logtree = logsumexp([self.log_pi_k + self.logp, self.log_pi_k_inv + self.children[0].logtree + self.children[1].logtree])
+                print("LOGTREE", self.logtree)
 
             # Update the cached distances at the parent.
             if self.parent:
@@ -289,13 +311,17 @@ class PNode:
             # TODO (AK): parent if self.pount_counter is <= than the threshold.
             still_have_pts = self.pts or (
                 self.parent and self.siblings()[0].pts)
-            return self, new_mins_or_maxes or still_have_pts
+            # return self, new_mins_or_maxes or still_have_pts
+            return self, True
         else:
             self.mins = self.pts[0][0]
             self.maxes = self.pts[0][0]
             if self.parent:
                 self.parent._update_children_min_d()
                 self.parent._update_children_max_d()
+
+            self.logp, _ = self.niw.log_marginal_likelihood(np.array(self.X))
+            self.logtree = self.logp
             return self, True
 
     def _update_params_recursively(self):
@@ -371,7 +397,7 @@ class PNode:
                         heappush(frontier, (min_d, child))
                 else:
                     return target
-        assert(False)   # This line should never be executed.
+        assert (False)  # This line should never be executed.
 
     def a_star_beam(self, pt, heuristic=lambda n, x: n.min_distance(x),
                     beam_width=10):
@@ -435,7 +461,7 @@ class PNode:
                     frontier.pop()
                     priorities.pop()
             return heappop(best_leaves_so_far)[1]
-        assert(False) # You can never reach this line.
+        assert (False)  # You can never reach this line.
 
     def add_child(self, new_child):
         """Add a PNode as a child of this node (i.e., self).
@@ -488,7 +514,21 @@ class PNode:
         Returns:
         A pointer to the new node containing pt.
         """
-        new_internal = PNode(exact_dist_thres=self.exact_dist_threshold, nu_0=self.nu_0, mu_0=self.mu_0, kappa_0=self.kappa_0, lambda_0=self.lambda_0)
+        X_internal = self.X[:]
+        X_internal.append(pt[0])
+        print("XINTERNAL", X_internal)
+        X_internal_np = np.array([np.array(dp) for dp in X_internal])
+        internal_mean = np.mean(X_internal_np, axis=0)
+        internal_variance = np.var(X_internal_np, axis=0)
+        for idx, var in enumerate(internal_variance):
+            internal_variance[idx] = var + 1e-14
+        internal_cov = np.zeros((self.dims, self.dims))
+        row, col = np.diag_indices(internal_cov.shape[0])
+        internal_cov[row, col] = internal_variance
+
+        new_internal = PNode(exact_dist_thres=self.exact_dist_threshold, nu_0=self.nu_0, mu_0=internal_mean,
+                             kappa_0=self.kappa_0, lambda_0=internal_cov, dims=self.dims, concentration_alpha=10,
+                             pi_k=None, prob=self.prob)
         # If we are splitting down from a collapsed node, then the pts array
         # is already set to None and we shouldn't instantiate one.
         if self.pts is not None:
@@ -504,10 +544,23 @@ class PNode:
         else:
             new_internal.add_child(self)
 
-        new_leaf = PNode(exact_dist_thres=self.exact_dist_threshold, nu_0=self.nu_0, mu_0=self.mu_0, kappa_0=self.kappa_0, lambda_0=self.lambda_0)
+        leaf_pt = [pt[0]]
+        X_leaf = np.array([np.array(dp) for dp in leaf_pt])
+        leaf_mean = np.mean(X_leaf, axis=0)
+        leaf_variance = np.var(X_leaf, axis=0)
+        for idx, var in enumerate(leaf_variance):
+            leaf_variance[idx] = var + 1e-14
+        leaf_cov = np.zeros((self.dims, self.dims))
+        row, col = np.diag_indices(leaf_cov.shape[0])
+        leaf_cov[row, col] = leaf_variance
+
+        new_leaf = PNode(exact_dist_thres=self.exact_dist_threshold, nu_0=self.nu_0, mu_0=leaf_mean,
+                         kappa_0=self.kappa_0, lambda_0=leaf_cov, dims=self.dims, concentration_alpha=10, pi_k=1,
+                         prob=self.prob)
         new_leaf.add_pt(pt)  # This updates the points counter.
         new_internal.add_child(new_leaf)
-        new_internal.add_pt(pt) # This updates the points counter.
+        new_internal.add_pt(pt)  # This updates the points counter.
+        new_internal.X.extend(self.X)  # Adding self's pts to new internal node's data matrix
         return new_leaf
 
     def _rotate(self):
@@ -528,7 +581,16 @@ class PNode:
         self.parent.deleted = True
 
         # Make the aunt and self have the same parent
-        new_parent = PNode(exact_dist_thres=self.exact_dist_threshold, nu_0=self.nu_0, mu_0=self.mu_0, kappa_0=self.kappa_0, lambda_0=self.lambda_0)
+        X_np = np.array([np.array(dp) for dp in grand_parent.X])
+        mean = np.mean(X_np, axis=0)
+        variance = np.var(X_np, axis=0)
+        for idx, var in enumerate(variance):
+            variance[idx] = var + 1e-14
+        cov = np.zeros((self.dims, self.dims))
+        row, col = np.diag_indices(cov.shape[0])
+        cov[row, col] = variance
+        new_parent = PNode(exact_dist_thres=self.exact_dist_threshold, nu_0=self.nu_0, mu_0=mean, kappa_0=self.kappa_0,
+                           lambda_0=cov, dims=self.dims, concentration_alpha=10, pi_k=None, prob=self.prob)
         new_parent.pts = None
         new_parent.add_child(aunt)
         new_parent.add_child(self)
@@ -566,7 +628,7 @@ class PNode:
             r = curr_node.root()
             while curr_node != r:
                 if curr_node.parent and curr_node.parent.parent and \
-                        curr_node.is_more_likely_with_aunt():
+                        curr_node.is_more_tree_likely_with_aunt():
                     curr_node._rotate()
                     # Collapsed mode.
                     if collapsibles is not None and curr_node.is_leaf() and \
@@ -667,9 +729,9 @@ class PNode:
         pts = [p for l in self.leaves() for p in l.pts]
         for x in pts:
             if len(x) == 3:
-                p,l,id = x
+                p, l, id = x
             else:
-                p,l = x
+                p, l = x
             label_to_count[l] += 1.0
         return label_to_count
 
@@ -865,10 +927,64 @@ class PNode:
             aunt = self.aunts()[0]
             this_observation = self.parent.X
             other_observation = self.X + aunt.X
-            this_likelihood = self.niw.log_marginal_likelihood(np.array(this_observation))
-            other_likelihood = self.niw.log_marginal_likelihood(np.array(other_observation))
-
+            this_likelihood, _ = self.niw.log_marginal_likelihood(np.array(this_observation))
+            other_likelihood, _ = self.niw.log_marginal_likelihood(np.array(other_observation))
+            print("LIKELIHOODS", other_likelihood, this_likelihood)
             return other_likelihood > this_likelihood
+        else:
+            return False
+
+    def is_more_tree_likely_with_aunt(self):
+        """Determine if self is "closer" to its aunt than its sibling.
+
+        Check to see if every point in node is closer to every
+        point in its aunt's bounding box than in its siblings bounding box.
+
+        Args:
+        None.
+
+        Returns:
+        True if self is "closer" to its aunt than its sibling. False, otherwise.
+        """
+        if self.parent and self.parent.parent:
+            # aunt = self.aunts()[0]
+            # this_observation = self.parent.X
+            # other_observation = self.X + aunt.X
+            # this_likelihood, _ = self.niw.log_marginal_likelihood(np.array(this_observation))
+            # other_likelihood, _ = self.niw.log_marginal_likelihood(np.array(other_observation))
+            # print("LIKELIHOODS", other_likelihood, this_likelihood)
+            aunt = self.aunts()[0]
+            this_tree_prob = self.parent.parent.logtree
+            internal_likelihood, _ = self.niw.log_marginal_likelihood(np.array(self.X + aunt.X))
+            d_k_internal = logsumexp([math.log(self.concentration_alpha) + gammaln([len(self.X + aunt.X)])[0],
+                                      self.log_d_k + aunt.log_d_k])
+            pi_k_internal = math.log(self.concentration_alpha) + gammaln([len(self.X + aunt.X)])[0] - d_k_internal
+            pi_k_inv_internal = math.log(1 - math.exp(pi_k_internal))
+            logtree_internal = logsumexp(
+                [pi_k_internal + internal_likelihood, pi_k_inv_internal + self.logtree + aunt.logtree])
+            logtree_sibling = self.siblings()[0].logtree
+            pi_k_other = self.parent.parent.log_pi_k
+            pi_k_inv_other = self.parent.parent.log_pi_k_inv
+
+
+            X_np = np.array([np.array(dp) for dp in self.parent.parent.X])
+            mean = np.mean(X_np, axis=0)
+            variance = np.var(X_np, axis=0)
+            for idx, var in enumerate(variance):
+                variance[idx] = var + 1e-14
+            cov = np.zeros((self.dims, self.dims))
+            row, col = np.diag_indices(cov.shape[0])
+            cov[row, col] = variance
+            prior = NormalInverseWishart(nu_0=self.dims+2, mu_0=mean, kappa_0=1, lambda_0=cov)
+            other_likelihood, _ = prior.log_marginal_likelihood(np.array(self.parent.parent.X))
+            print("pikother", pi_k_other)
+            print("other_likelihood", other_likelihood)
+            print("pikinvother", pi_k_inv_other)
+            print("logtreeinternal", logtree_internal)
+            print("logtreesibling", logtree_sibling)
+            other_tree_prob = logsumexp(
+                [pi_k_other + other_likelihood, pi_k_inv_other + logtree_internal + logtree_sibling])
+            return other_tree_prob > this_tree_prob
         else:
             return False
 

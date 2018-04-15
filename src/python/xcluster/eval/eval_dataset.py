@@ -93,15 +93,15 @@ if __name__ == "__main__":
     for pt in load_data(args.input):
         X.append(pt[0])
     X_np = np.array([np.array(dp) for dp in X])
-    mean = np.mean(X, axis=0)
-    variance = np.var(X, axis=0)
+    mean = np.mean(X_np, axis=0)
+    variance = np.var(X_np, axis=0)
     for idx, var in enumerate(variance):
         variance[idx] = var + 1e-14
     cov = np.zeros((dims, dims))
     row, col = np.diag_indices(cov.shape[0])
-    cov[row, col] = np.random.rand(dims)
+    cov[row, col] = variance
 
-    root = PNode(exact_dist_thres=10, nu_0=dims+2, mu_0=np.random.rand(dims), kappa_0=1, lambda_0=cov, prob=True)
+    root = PNode(exact_dist_thres=10, nu_0=dims+2, mu_0=mean, kappa_0=1, lambda_0=cov, dims=dims, concentration_alpha=10, prob=True)
     for pt in load_data(args.input):
         pt_start = time.time()
         root = root.insert(pt, collapsibles=collapsibles, L=L)
